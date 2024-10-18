@@ -1,0 +1,1 @@
+"use strict";(globalThis.webpackChunkmetamask_crx=globalThis.webpackChunkmetamask_crx||[]).push([[52624],{"./node_modules/@metamask/bitcoin-wallet-snap/dist/preinstalled-snap.json":module=>{module.exports=JSON.parse('{"gd":"npm:@metamask/bitcoin-wallet-snap","eu":{"CI":"Bitcoin"}}')}}]);
