@@ -1,0 +1,6 @@
+"use strict";(globalThis.webpackChunkmetamask_crx=globalThis.webpackChunkmetamask_crx||[]).push([[55541],{"./ui/components/app/transaction-list/transaction-list.stories.js":(__unused_webpack_module,__webpack_exports__,__webpack_require__)=>{__webpack_require__.r(__webpack_exports__),__webpack_require__.d(__webpack_exports__,{DefaultStory:()=>DefaultStory,__namedExportsOrder:()=>__namedExportsOrder,default:()=>__WEBPACK_DEFAULT_EXPORT__});var react__WEBPACK_IMPORTED_MODULE_0__=__webpack_require__("./node_modules/react/index.js"),___WEBPACK_IMPORTED_MODULE_1__=__webpack_require__("./ui/components/app/transaction-list/index.js");let __WEBPACK_DEFAULT_EXPORT__={title:"Components/App/TransactionList"};var PageSet=function(param){return param.children},DefaultStory=function(){return react__WEBPACK_IMPORTED_MODULE_0__.createElement(PageSet,null,react__WEBPACK_IMPORTED_MODULE_0__.createElement(___WEBPACK_IMPORTED_MODULE_1__.A,null))};DefaultStory.storyName="Default",DefaultStory.parameters={...DefaultStory.parameters,docs:{...DefaultStory.parameters?.docs,source:{originalSource:`() => {
+  return <PageSet>
+      <TransactionList />
+    </PageSet>;
+}`,...DefaultStory.parameters?.docs?.source}}};let __namedExportsOrder=["DefaultStory"]}}]);
+//# sourceMappingURL=components-app-transaction-list-transaction-list-stories.777469e5.iframe.bundle.js.map
