@@ -1,0 +1,1 @@
+(globalThis.webpackChunkmetamask_crx=globalThis.webpackChunkmetamask_crx||[]).push([[54484],{"?6eb0":()=>{}}]);
