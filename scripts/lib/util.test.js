@@ -1,0 +1,1068 @@
+import {
+  TransactionEnvelopeType,
+  TransactionStatus,
+  TransactionType,
+} from '@metamask/transaction-controller';
+import {
+  DEVICE_TYPE,
+  OS,
+  PLATFORM_BRAVE,
+  PLATFORM_CHROME,
+  PLATFORM_CHROMIUM,
+  PLATFORM_COCCOC,
+  PLATFORM_EDGE,
+  PLATFORM_EDGE_ANDROID,
+  PLATFORM_FIREFOX,
+  PLATFORM_KIWI,
+  PLATFORM_LEMUR,
+  PLATFORM_MAXTHON,
+  PLATFORM_MISES,
+  PLATFORM_OPERA,
+  PLATFORM_OTHER,
+  PLATFORM_PUFFIN,
+  PLATFORM_QQBROWSER,
+  PLATFORM_SAMSUNG,
+  PLATFORM_SILK,
+  PLATFORM_UCBROWSER,
+  PLATFORM_VIVALDI,
+  PLATFORM_WHALE,
+  PLATFORM_YANDEX,
+} from '../../../shared/constants/app';
+import { isPrefixedFormattedHexString } from '../../../shared/lib/network.utils';
+import * as FourBiteUtils from '../../../shared/lib/four-byte';
+import { withResolvers } from '../../../shared/lib/promise-with-resolvers';
+import {
+  shouldEmitDappViewedEvent,
+  addUrlProtocolPrefix,
+  formatTxMetaForRpcResult,
+  getDeviceType,
+  getOs,
+  getPlatform,
+  getValidUrl,
+  isWebUrl,
+  isWebOrigin,
+  getMethodDataName,
+  getBooleanFlag,
+  extractRpcDomain,
+  isKnownDomain,
+  initializeRpcProviderDomains,
+  isPublicEndpointUrl,
+  isSpecialUseDomain,
+} from './util';
+
+// Mock the module
+jest.mock('./util', () => ({
+  ...jest.requireActual('./util'),
+  isKnownDomain: jest.fn(),
+  initializeRpcProviderDomains: jest.fn(),
+}));
+
+describe('app utils', () => {
+  describe('URL utils', () => {
+    it('should test addUrlProtocolPrefix', () => {
+      expect(addUrlProtocolPrefix('http://example.com')).toStrictEqual(
+        'http://example.com',
+      );
+      expect(addUrlProtocolPrefix('https://example.com')).toStrictEqual(
+        'https://example.com',
+      );
+      expect(addUrlProtocolPrefix('example.com')).toStrictEqual(
+        'https://example.com',
+      );
+      expect(addUrlProtocolPrefix('exa mple.com')).toStrictEqual(null);
+    });
+
+    it('should test isWebUrl', () => {
+      expect(isWebUrl('http://example.com')).toStrictEqual(true);
+      expect(isWebUrl('https://example.com')).toStrictEqual(true);
+      expect(isWebUrl('https://exa mple.com')).toStrictEqual(false);
+      expect(isWebUrl('')).toStrictEqual(false);
+    });
+
+    it('should test getValidUrl', () => {
+      expect(getValidUrl('http://example.com').toString()).toStrictEqual(
+        'http://example.com/',
+      );
+      expect(getValidUrl('https://example.com').toString()).toStrictEqual(
+        'https://example.com/',
+      );
+      expect(getValidUrl('https://exa%20mple.com')).toStrictEqual(null);
+      expect(getValidUrl('')).toStrictEqual(null);
+    });
+
+    it('should test isWebOrigin', () => {
+      // Valid web origins
+      expect(isWebOrigin('http://example.com')).toStrictEqual(true);
+      expect(isWebOrigin('https://example.com')).toStrictEqual(true);
+      expect(isWebOrigin('http://localhost:8545')).toStrictEqual(true);
+      expect(isWebOrigin('https://metamask.io')).toStrictEqual(true);
+
+      // Non-web origins (browser internal pages)
+      expect(isWebOrigin('chrome://newtab')).toStrictEqual(false);
+      expect(isWebOrigin('chrome://settings')).toStrictEqual(false);
+      expect(isWebOrigin('about:blank')).toStrictEqual(false);
+      expect(isWebOrigin('about:debugging')).toStrictEqual(false);
+
+      // Extension pages
+      expect(isWebOrigin('chrome-extension://abc123')).toStrictEqual(false);
+      expect(isWebOrigin('moz-extension://abc123')).toStrictEqual(false);
+
+      // Edge cases
+      expect(isWebOrigin(null)).toStrictEqual(false);
+      expect(isWebOrigin(undefined)).toStrictEqual(false);
+      expect(isWebOrigin('')).toStrictEqual(false);
+      expect(isWebOrigin('file:///path/to/file')).toStrictEqual(false);
+      expect(isWebOrigin('ftp://example.com')).toStrictEqual(false);
+    });
+  });
+
+  describe('isPrefixedFormattedHexString', () => {
+    it('should return true for valid hex strings', () => {
+      expect(isPrefixedFormattedHexString('0x1')).toStrictEqual(true);
+
+      expect(isPrefixedFormattedHexString('0xa')).toStrictEqual(true);
+
+      expect(
+        isPrefixedFormattedHexString('0xabcd1123fae909aad87452'),
+      ).toStrictEqual(true);
+    });
+
+    it('should return false for invalid hex strings', () => {
+      expect(isPrefixedFormattedHexString('0x')).toStrictEqual(false);
+
+      expect(isPrefixedFormattedHexString('0x0')).toStrictEqual(false);
+
+      expect(isPrefixedFormattedHexString('0x01')).toStrictEqual(false);
+
+      expect(isPrefixedFormattedHexString(' 0x1')).toStrictEqual(false);
+
+      expect(isPrefixedFormattedHexString('0x1 ')).toStrictEqual(false);
+
+      expect(isPrefixedFormattedHexString('0x1afz')).toStrictEqual(false);
+
+      expect(isPrefixedFormattedHexString('z')).toStrictEqual(false);
+
+      expect(isPrefixedFormattedHexString(2)).toStrictEqual(false);
+
+      expect(isPrefixedFormattedHexString(['0x1'])).toStrictEqual(false);
+
+      expect(isPrefixedFormattedHexString()).toStrictEqual(false);
+    });
+  });
+
+  describe('getPlatform', () => {
+    let userAgent, setBrowserSpecificWindow;
+
+    beforeEach(() => {
+      userAgent = jest.spyOn(window.navigator, 'userAgent', 'get');
+
+      setBrowserSpecificWindow = (browser) => {
+        switch (browser) {
+          case 'firefox': {
+            userAgent.mockReturnValue(
+              'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:95.0) Gecko/20100101 Firefox/95.0',
+            );
+            break;
+          }
+          case 'edge': {
+            userAgent.mockReturnValue(
+              'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/95.0.4638.54 Safari/537.36 Edg/95.0.1020.30',
+            );
+            break;
+          }
+          case 'opera': {
+            userAgent.mockReturnValue(
+              'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.81 Safari/537.36 OPR/80.0.4170.63',
+            );
+
+            break;
+          }
+          default: {
+            userAgent.mockReturnValue(
+              'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.81 Safari/537.36',
+            );
+            break;
+          }
+        }
+      };
+    });
+
+    it('should detect Firefox', () => {
+      setBrowserSpecificWindow('firefox');
+      expect(getPlatform()).toStrictEqual(PLATFORM_FIREFOX);
+    });
+
+    it('should detect Edge', () => {
+      setBrowserSpecificWindow('edge');
+      expect(getPlatform()).toStrictEqual(PLATFORM_EDGE);
+    });
+
+    it('detects Edge Android', () => {
+      jest
+        .spyOn(window.navigator, 'userAgent', 'get')
+        .mockReturnValue(
+          'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Mobile Safari/537.36 EdgA/144.0.0.0',
+        );
+      expect(getPlatform()).toStrictEqual(PLATFORM_EDGE_ANDROID);
+    });
+
+    it('should detect Opera', () => {
+      setBrowserSpecificWindow('opera');
+      expect(getPlatform()).toStrictEqual(PLATFORM_OPERA);
+    });
+
+    it('should detect Chrome', () => {
+      setBrowserSpecificWindow('chrome');
+      expect(getPlatform()).toStrictEqual(PLATFORM_CHROME);
+    });
+
+    // Parameterized tests for browsers detected via User-Agent string
+    // Note: Lemur and Mises are NOT included here because they don't expose
+    // their identity in UA strings - they're detected via userAgentData.brands
+    it.each([
+      [
+        'Vivaldi',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Vivaldi/7.7.3851.58',
+        PLATFORM_VIVALDI,
+      ],
+      [
+        'Samsung Internet',
+        'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Mobile Safari/537.36 SamsungBrowser/23.0',
+        PLATFORM_SAMSUNG,
+      ],
+      [
+        'Yandex',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 YaBrowser/23.7.0 Safari/537.36',
+        PLATFORM_YANDEX,
+      ],
+      [
+        'Whale',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Whale/3.21.192.18 Safari/537.36',
+        PLATFORM_WHALE,
+      ],
+      [
+        'Puffin',
+        'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.141 Mobile Safari/537.36 Puffin/9.7.0.51573AP',
+        PLATFORM_PUFFIN,
+      ],
+      [
+        'Silk',
+        'Mozilla/5.0 (Linux; Android 9; KFMAWI) AppleWebKit/537.36 (KHTML, like Gecko) Silk/112.4.2 like Chrome/112.0.5615.136 Safari/537.36',
+        PLATFORM_SILK,
+      ],
+      [
+        'UC Browser',
+        'Mozilla/5.0 (Linux; U; Android 10; en-US) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/78.0.3904.108 UCBrowser/13.4.0.1306 Mobile Safari/537.36',
+        PLATFORM_UCBROWSER,
+      ],
+      [
+        'Maxthon',
+        'Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/61.0.3163.79 Safari/537.36 Maxthon/5.2.7.5000',
+        PLATFORM_MAXTHON,
+      ],
+      [
+        'Chromium',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chromium/116.0.5845.96 Safari/537.36',
+        PLATFORM_CHROMIUM,
+      ],
+      [
+        'Cốc Cốc',
+        'Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) coc_coc_browser/83.0.138 Chrome/77.0.3865.138 Safari/537.36',
+        PLATFORM_COCCOC,
+      ],
+      [
+        'QQ Browser (desktop)',
+        'Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/64.0.3715.128 Safari/537.36 Core/1.70.3722.400 QQBrowser/10.5.3739.400',
+        PLATFORM_QQBROWSER,
+      ],
+      [
+        'QQ Browser (mobile)',
+        'Mozilla/5.0 (Linux; U; Android 13; zh-cn) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/109.0.5414.86 MQQBrowser/16.2 Mobile Safari/537.36',
+        PLATFORM_QQBROWSER,
+      ],
+      [
+        'Kiwi',
+        'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36 Kiwi Chrome/116.0.0.0',
+        PLATFORM_KIWI,
+      ],
+      [
+        'Unknown (no Chrome)',
+        'Mozilla/5.0 (compatible; SomeUnknownBrowser/1.0)',
+        PLATFORM_OTHER,
+      ],
+    ])('detects %s browser from UA string', (_name, ua, expected) => {
+      jest.spyOn(window.navigator, 'userAgent', 'get').mockReturnValue(ua);
+      expect(getPlatform()).toStrictEqual(expected);
+    });
+
+    describe('hybrid detection (UA + brands fallback)', () => {
+      let originalUserAgentData;
+
+      beforeEach(() => {
+        originalUserAgentData = window.navigator.userAgentData;
+      });
+
+      afterEach(() => {
+        // Restore original userAgentData
+        Object.defineProperty(window.navigator, 'userAgentData', {
+          value: originalUserAgentData,
+          writable: true,
+          configurable: true,
+        });
+      });
+
+      // Browsers that hide their identity in UA string but expose it via brands
+      it.each([
+        ['Brave', 'Brave', PLATFORM_BRAVE],
+        ['Lemur', 'Lemur', PLATFORM_LEMUR],
+        ['Mises', 'Mises', PLATFORM_MISES],
+      ])(
+        'detects %s from brands when UA looks like Chrome',
+        (_name, brandName, expectedPlatform) => {
+          // UA looks like regular Chrome (no browser-specific identifier)
+          jest
+            .spyOn(window.navigator, 'userAgent', 'get')
+            .mockReturnValue(
+              'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Mobile Safari/537.36',
+            );
+
+          // But brands includes the specific browser
+          Object.defineProperty(window.navigator, 'userAgentData', {
+            value: {
+              brands: [
+                { brand: 'Chromium', version: '136' },
+                { brand: brandName, version: '136' },
+                { brand: 'Not.A/Brand', version: '99' },
+              ],
+              mobile: true,
+              platform: 'Android',
+            },
+            writable: true,
+            configurable: true,
+          });
+
+          expect(getPlatform()).toStrictEqual(expectedPlatform);
+        },
+      );
+
+      it('prioritizes UA detection over brands when UA identifies a specific browser', () => {
+        // Edge is detected in UA
+        jest
+          .spyOn(window.navigator, 'userAgent', 'get')
+          .mockReturnValue(
+            'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Mobile Safari/537.36 EdgA/144.0.0.0',
+          );
+
+        // Brands also includes Edge (should not matter since UA detection succeeds)
+        Object.defineProperty(window.navigator, 'userAgentData', {
+          value: {
+            brands: [
+              { brand: 'Chromium', version: '144' },
+              { brand: 'Microsoft Edge', version: '144' },
+              { brand: 'Not.A/Brand', version: '99' },
+            ],
+            mobile: true,
+            platform: 'Android',
+          },
+          writable: true,
+          configurable: true,
+        });
+
+        // Should use UA detection (Edge Android) not brands
+        expect(getPlatform()).toStrictEqual(PLATFORM_EDGE_ANDROID);
+      });
+
+      it('returns Chrome when brands contains Google Chrome', () => {
+        // Generic Chrome UA
+        jest
+          .spyOn(window.navigator, 'userAgent', 'get')
+          .mockReturnValue(
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.81 Safari/537.36',
+          );
+
+        // Brands contains "Google Chrome" which maps to PLATFORM_CHROME
+        Object.defineProperty(window.navigator, 'userAgentData', {
+          value: {
+            brands: [
+              { brand: 'Chromium', version: '94' },
+              { brand: 'Google Chrome', version: '94' },
+              { brand: 'Not.A/Brand', version: '99' },
+            ],
+            mobile: false,
+            platform: 'macOS',
+          },
+          writable: true,
+          configurable: true,
+        });
+
+        expect(getPlatform()).toStrictEqual(PLATFORM_CHROME);
+      });
+
+      it('returns Other when UA is unknown and brands is unavailable', () => {
+        jest
+          .spyOn(window.navigator, 'userAgent', 'get')
+          .mockReturnValue('Mozilla/5.0 (compatible; SomeUnknownBrowser/1.0)');
+
+        Object.defineProperty(window.navigator, 'userAgentData', {
+          value: undefined,
+          writable: true,
+          configurable: true,
+        });
+
+        expect(getPlatform()).toStrictEqual(PLATFORM_OTHER);
+      });
+
+      it('returns discovered brand even when not yet mapped in our codebase', () => {
+        // UA looks like Chrome
+        jest
+          .spyOn(window.navigator, 'userAgent', 'get')
+          .mockReturnValue(
+            'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/136.0.0.0 Mobile Safari/537.36',
+          );
+
+        // Brands includes a browser not yet in our mapping
+        Object.defineProperty(window.navigator, 'userAgentData', {
+          value: {
+            brands: [
+              { brand: 'Chromium', version: '136' },
+              { brand: 'DiscoveredBrowser', version: '1' },
+              { brand: 'Not.A/Brand', version: '99' },
+            ],
+            mobile: true,
+            platform: 'Android',
+          },
+          writable: true,
+          configurable: true,
+        });
+
+        // Should return the brand name as-is for analytics discovery
+        expect(getPlatform()).toStrictEqual('DiscoveredBrowser');
+      });
+    });
+  });
+
+  describe('getDeviceType', () => {
+    const setNavigator = ({ userAgentData, userAgent }) => {
+      Object.defineProperty(window.navigator, 'userAgentData', {
+        value: userAgentData,
+        writable: true,
+        configurable: true,
+      });
+      if (userAgent !== undefined) {
+        jest
+          .spyOn(window.navigator, 'userAgent', 'get')
+          .mockReturnValue(userAgent);
+      }
+    };
+
+    it.each([
+      [true, DEVICE_TYPE.MOBILE],
+      [false, DEVICE_TYPE.DESKTOP],
+    ])('when userAgentData.mobile is %s, returns %s', (mobile, expected) => {
+      setNavigator({ userAgentData: { mobile } });
+      expect(getDeviceType()).toStrictEqual(expected);
+    });
+
+    it.each([
+      [
+        'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/91.0 Mobile Safari/537.36',
+        DEVICE_TYPE.MOBILE,
+      ],
+      [
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15',
+        DEVICE_TYPE.MOBILE,
+      ],
+      [
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/94.0.4606.81 Safari/537.36',
+        DEVICE_TYPE.DESKTOP,
+      ],
+    ])(
+      'falls back to UA when userAgentData is missing',
+      (userAgent, expected) => {
+        setNavigator({ userAgentData: undefined, userAgent });
+        expect(getDeviceType()).toStrictEqual(expected);
+      },
+    );
+  });
+
+  describe('getOs', () => {
+    const setNavigator = ({ userAgentData, userAgent, platform }) => {
+      Object.defineProperty(window.navigator, 'userAgentData', {
+        value: userAgentData,
+        writable: true,
+        configurable: true,
+      });
+      if (userAgent !== undefined) {
+        jest
+          .spyOn(window.navigator, 'userAgent', 'get')
+          .mockReturnValue(userAgent);
+      }
+      if (platform !== undefined) {
+        jest
+          .spyOn(window.navigator, 'platform', 'get')
+          .mockReturnValue(platform);
+      }
+    };
+
+    it.each([
+      ['Windows', OS.WINDOWS],
+      ['macOS', OS.MACOS],
+      ['Linux', OS.LINUX],
+      ['Android', OS.ANDROID],
+    ])(
+      'returns %s when userAgentData.platform is "%s"',
+      (platform, expected) => {
+        setNavigator({ userAgentData: { platform } });
+        expect(getOs()).toStrictEqual(expected);
+      },
+    );
+
+    it('returns Other for unknown userAgentData.platform string', () => {
+      setNavigator({ userAgentData: { platform: 'UnknownOS' } });
+      expect(getOs()).toStrictEqual(OS.OTHER);
+    });
+
+    it.each([
+      [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/94.0.4606.81',
+        OS.WINDOWS,
+      ],
+      [
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/94.0.4606.81 Safari/537.36',
+        OS.MACOS,
+      ],
+      [
+        'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/91.0 Mobile Safari/537.36',
+        OS.ANDROID,
+      ],
+      [
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15',
+        OS.IOS,
+      ],
+    ])(
+      'falls back to UA when userAgentData is missing',
+      (userAgent, expected) => {
+        setNavigator({ userAgentData: undefined, userAgent });
+        expect(getOs()).toStrictEqual(expected);
+      },
+    );
+
+    it('returns unknown when userAgentData is missing and UA cannot be parsed', () => {
+      setNavigator({
+        userAgentData: undefined,
+        userAgent: '',
+        platform: '',
+      });
+      expect(getOs()).toStrictEqual(OS.UNKNOWN);
+    });
+  });
+
+  describe('Promise.withResolvers', () => {
+    it('should allow rejecting a deferred Promise', async () => {
+      const { promise, reject } = withResolvers();
+
+      reject(new Error('test'));
+
+      await expect(promise).rejects.toThrow('test');
+    });
+
+    it('should allow resolving a deferred Promise', async () => {
+      const { promise, resolve } = withResolvers();
+
+      resolve('test');
+
+      await expect(promise).resolves.toBe('test');
+    });
+
+    it('should still be rejected after reject is called twice', async () => {
+      const { promise, reject } = withResolvers();
+
+      reject(new Error('test'));
+      reject(new Error('different message'));
+
+      await expect(promise).rejects.toThrow('test');
+    });
+
+    it('should still be rejected after resolve is called post-rejection', async () => {
+      const { promise, resolve, reject } = withResolvers();
+
+      reject(new Error('test'));
+      resolve('different message');
+
+      await expect(promise).rejects.toThrow('test');
+    });
+
+    it('should still be resolved after resolve is called twice', async () => {
+      const { promise, resolve } = withResolvers();
+
+      resolve('test');
+      resolve('different message');
+
+      await expect(promise).resolves.toBe('test');
+    });
+
+    it('should still be resolved after reject is called post-resolution', async () => {
+      const { promise, resolve, reject } = withResolvers();
+
+      resolve('test');
+      reject(new Error('different message'));
+
+      await expect(promise).resolves.toBe('test');
+    });
+  });
+
+  describe('shouldEmitDappViewedEvent', () => {
+    it('should return true for valid metrics IDs', () => {
+      expect(shouldEmitDappViewedEvent('fake-metrics-id-fd20')).toStrictEqual(
+        true,
+      );
+    });
+    it('should return false for invalid metrics IDs', () => {
+      expect(
+        shouldEmitDappViewedEvent('fake-metrics-id-invalid'),
+      ).toStrictEqual(false);
+    });
+
+    it('should return false for Firefox', () => {
+      jest
+        .spyOn(window.navigator, 'userAgent', 'get')
+        .mockReturnValue(
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:95.0) Gecko/20100101 Firefox/95.0',
+        );
+      expect(shouldEmitDappViewedEvent('fake-metrics-id-fd20')).toStrictEqual(
+        false,
+      );
+    });
+  });
+
+  describe('formatTxMetaForRpcResult', () => {
+    it('should correctly format the tx meta object (EIP-1559)', () => {
+      const txMeta = {
+        id: 1,
+        status: TransactionStatus.unapproved,
+        txParams: {
+          from: '0xc684832530fcbddae4b4230a47e991ddcec2831d',
+          to: '0x1678a085c290ebd122dc42cba69373b5953b831d',
+          maxFeePerGas: '0x77359400',
+          maxPriorityFeePerGas: '0x77359400',
+          gas: '0x7b0d',
+          nonce: '0x4b',
+        },
+        type: TransactionType.simpleSend,
+        origin: 'other',
+        chainId: '0x5',
+        time: 1624408066355,
+        hash: '0x4bcb6cd6b182209585f8ad140260ddb35c81a575dd40f508d9767e652a9f60e7',
+        r: '0x4c3111e42ed5eec3dcecba1e234700f387e8693c373c61c3e54a762a26f1570e',
+        s: '0x18bfc4eeb7ebcfacc3bd59ea100a6834ea3265e65945dbec69aa2a06564fafff',
+        v: '0x29',
+      };
+      const expectedResult = {
+        accessList: null,
+        blockHash: null,
+        blockNumber: null,
+        from: '0xc684832530fcbddae4b4230a47e991ddcec2831d',
+        gas: '0x7b0d',
+        gasPrice: '0x77359400',
+        hash: '0x4bcb6cd6b182209585f8ad140260ddb35c81a575dd40f508d9767e652a9f60e7',
+        input: '0x',
+        maxFeePerGas: '0x77359400',
+        maxPriorityFeePerGas: '0x77359400',
+        nonce: '0x4b',
+        r: '0x4c3111e42ed5eec3dcecba1e234700f387e8693c373c61c3e54a762a26f1570e',
+        s: '0x18bfc4eeb7ebcfacc3bd59ea100a6834ea3265e65945dbec69aa2a06564fafff',
+        to: '0x1678a085c290ebd122dc42cba69373b5953b831d',
+        transactionIndex: null,
+        type: '0x2',
+        v: '0x29',
+        value: '0x0',
+      };
+      const result = formatTxMetaForRpcResult(txMeta);
+      expect(result).toStrictEqual(expectedResult);
+    });
+
+    it('should correctly format the tx meta object (non EIP-1559)', () => {
+      const txMeta = {
+        id: 1,
+        status: TransactionStatus.unapproved,
+        txParams: {
+          from: '0xc684832530fcbddae4b4230a47e991ddcec2831d',
+          to: '0x1678a085c290ebd122dc42cba69373b5953b831d',
+          gasPrice: '0x77359400',
+          gas: '0x7b0d',
+          nonce: '0x4b',
+        },
+        type: TransactionType.simpleSend,
+        origin: 'other',
+        chainId: '0x5',
+        time: 1624408066355,
+        hash: '0x4bcb6cd6b182209585f8ad140260ddb35c81a575dd40f508d9767e652a9f60e7',
+        r: '0x4c3111e42ed5eec3dcecba1e234700f387e8693c373c61c3e54a762a26f1570e',
+        s: '0x18bfc4eeb7ebcfacc3bd59ea100a6834ea3265e65945dbec69aa2a06564fafff',
+        v: '0x29',
+      };
+      const expectedResult = {
+        accessList: null,
+        blockHash: null,
+        blockNumber: null,
+        from: '0xc684832530fcbddae4b4230a47e991ddcec2831d',
+        gas: '0x7b0d',
+        hash: '0x4bcb6cd6b182209585f8ad140260ddb35c81a575dd40f508d9767e652a9f60e7',
+        input: '0x',
+        gasPrice: '0x77359400',
+        nonce: '0x4b',
+        r: '0x4c3111e42ed5eec3dcecba1e234700f387e8693c373c61c3e54a762a26f1570e',
+        s: '0x18bfc4eeb7ebcfacc3bd59ea100a6834ea3265e65945dbec69aa2a06564fafff',
+        to: '0x1678a085c290ebd122dc42cba69373b5953b831d',
+        transactionIndex: null,
+        type: TransactionEnvelopeType.legacy,
+        v: '0x29',
+        value: '0x0',
+      };
+      const result = formatTxMetaForRpcResult(txMeta);
+      expect(result).toStrictEqual(expectedResult);
+    });
+  });
+
+  describe('getMethodDataName', () => {
+    const knownMethodData = {
+      '0x60806040': {
+        name: 'Approve Tokens',
+      },
+      '0x095ea7b3': {
+        name: 'Approve Tokens',
+      },
+    };
+
+    it('return null if use4ByteResolution is not true', async () => {
+      expect(
+        await getMethodDataName(knownMethodData, false, '0x60806040'),
+      ).toStrictEqual(null);
+    });
+
+    it('return null if prefixedData is not defined', async () => {
+      expect(
+        await getMethodDataName(knownMethodData, true, undefined),
+      ).toStrictEqual(null);
+    });
+
+    it('return details from knownMethodData if defined', async () => {
+      expect(
+        await getMethodDataName(knownMethodData, true, '0x60806040'),
+      ).toStrictEqual(knownMethodData['0x60806040']);
+    });
+
+    it('invoke getMethodDataAsync if details not available in knownMethodData', async () => {
+      const DUMMY_METHOD_NAME = {
+        name: 'Dummy Method Name',
+      };
+      jest
+        .spyOn(FourBiteUtils, 'getMethodDataAsync')
+        .mockResolvedValue(DUMMY_METHOD_NAME);
+      expect(
+        await getMethodDataName(knownMethodData, true, '0x123', jest.fn()),
+      ).toStrictEqual(DUMMY_METHOD_NAME);
+    });
+
+    it('invoke addKnownMethodData if details not available in knownMethodData', async () => {
+      const DUMMY_METHOD_NAME = {
+        name: 'Dummy Method Name',
+      };
+      const addKnownMethodData = jest.fn();
+      jest
+        .spyOn(FourBiteUtils, 'getMethodDataAsync')
+        .mockResolvedValue(DUMMY_METHOD_NAME);
+      expect(
+        await getMethodDataName(
+          knownMethodData,
+          true,
+          '0x123',
+          addKnownMethodData,
+        ),
+      ).toStrictEqual(DUMMY_METHOD_NAME);
+      expect(addKnownMethodData).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not invoke addKnownMethodData if no method data available', async () => {
+      const addKnownMethodData = jest.fn();
+
+      jest.spyOn(FourBiteUtils, 'getMethodDataAsync').mockResolvedValue({});
+
+      expect(
+        await getMethodDataName(
+          knownMethodData,
+          true,
+          '0x123',
+          addKnownMethodData,
+        ),
+      ).toStrictEqual({});
+
+      expect(addKnownMethodData).toHaveBeenCalledTimes(0);
+    });
+  });
+
+  describe('getBooleanFlag', () => {
+    it('returns `true` for `true` and `"true"`', () => {
+      expect(getBooleanFlag(true)).toBe(true);
+      expect(getBooleanFlag('true')).toBe(true);
+    });
+
+    it('returns `false` for other values', () => {
+      expect(getBooleanFlag(false)).toBe(false);
+      expect(getBooleanFlag('false')).toBe(false);
+      expect(getBooleanFlag(undefined)).toBe(false);
+      expect(getBooleanFlag('foo')).toBe(false);
+    });
+  });
+
+  describe('RPC URL handling utilities', () => {
+    describe('isKnownDomain', () => {
+      beforeEach(() => {
+        const testKnownDomains = new Set([
+          'mainnet.infura.io',
+          'eth-mainnet.alchemyapi.io',
+        ]);
+
+        isKnownDomain.mockImplementation((domain) => {
+          if (!domain) {
+            return false;
+          }
+          return testKnownDomains.has(domain.toLowerCase());
+        });
+      });
+
+      afterEach(() => {
+        jest.clearAllMocks();
+      });
+
+      it('should correctly identify known domains', () => {
+        expect(isKnownDomain('mainnet.infura.io')).toBe(true);
+        expect(isKnownDomain('MAINNET.INFURA.IO')).toBe(true);
+        expect(isKnownDomain('unknown-domain.com')).toBe(false);
+        expect(isKnownDomain(null)).toBe(false);
+        expect(isKnownDomain('')).toBe(false);
+      });
+    });
+
+    describe('initializeRpcProviderDomains', () => {
+      let mockPromise;
+
+      beforeEach(() => {
+        mockPromise = Promise.resolve();
+        initializeRpcProviderDomains.mockReturnValue(mockPromise);
+      });
+
+      afterEach(() => {
+        jest.clearAllMocks();
+      });
+
+      it('should return a promise', async () => {
+        const result = initializeRpcProviderDomains();
+        expect(result).toBeInstanceOf(Promise);
+        await result;
+      });
+
+      it('should reuse the same promise on subsequent calls', () => {
+        const result1 = initializeRpcProviderDomains();
+        const result2 = initializeRpcProviderDomains();
+        expect(result1).toBe(result2);
+      });
+    });
+  });
+
+  describe('extractRpcDomain', () => {
+    const testKnownDomains = new Set([
+      'mainnet.infura.io',
+      'linea-goerli.infura.io',
+      'eth-mainnet.alchemyapi.io',
+      'rpc.tenderly.co',
+    ]);
+
+    it('should extract domain from known URLs', () => {
+      expect(
+        extractRpcDomain(
+          'https://mainnet.infura.io/v3/abc123',
+          testKnownDomains,
+        ),
+      ).toBe('mainnet.infura.io');
+
+      expect(
+        extractRpcDomain(
+          'https://eth-mainnet.alchemyapi.io/v2/key',
+          testKnownDomains,
+        ),
+      ).toBe('eth-mainnet.alchemyapi.io');
+
+      expect(
+        extractRpcDomain(
+          'https://MAINNET.INFURA.IO/v3/abc123',
+          testKnownDomains,
+        ),
+      ).toBe('mainnet.infura.io');
+    });
+
+    it('should handle URLs without protocol for known domains', () => {
+      expect(
+        extractRpcDomain('mainnet.infura.io/v3/abc123', testKnownDomains),
+      ).toBe('mainnet.infura.io');
+    });
+
+    it('should return private for any unknown domain', () => {
+      expect(extractRpcDomain('http://localhost:8545')).toBe('private');
+      expect(extractRpcDomain('https://unknown-domain.com')).toBe('private');
+      expect(extractRpcDomain('http://192.168.1.1:8545')).toBe('private');
+      expect(extractRpcDomain('ws://custom-domain.xyz')).toBe('private');
+      expect(extractRpcDomain('https://rpc.ankr.com/eth_goerli')).toBe(
+        'private',
+      );
+    });
+
+    it('should handle invalid URLs and edge cases', () => {
+      expect(extractRpcDomain('')).toBe('invalid');
+      expect(extractRpcDomain(null)).toBe('invalid');
+      expect(extractRpcDomain('http://')).toBe('invalid');
+      expect(extractRpcDomain('https://')).toBe('invalid');
+    });
+  });
+
+  describe('isPublicEndpointUrl', () => {
+    const MOCK_INFURA_PROJECT_ID = 'test-project-id';
+
+    it('should return true for Infura URLs', () => {
+      expect(
+        isPublicEndpointUrl(
+          `https://mainnet.infura.io/v3/${MOCK_INFURA_PROJECT_ID}`,
+          MOCK_INFURA_PROJECT_ID,
+        ),
+      ).toBe(true);
+    });
+
+    it('should return false for unknown URLs', () => {
+      expect(
+        isPublicEndpointUrl(
+          'https://unknown.example.com',
+          MOCK_INFURA_PROJECT_ID,
+        ),
+      ).toBe(false);
+    });
+
+    describe('localhost and IP addresses', () => {
+      it('should return false for localhost', () => {
+        expect(
+          isPublicEndpointUrl('http://localhost:8545', MOCK_INFURA_PROJECT_ID),
+        ).toBe(false);
+      });
+
+      it('should return false for any IPv4 address', () => {
+        // Loopback
+        expect(
+          isPublicEndpointUrl('http://127.0.0.1:8545', MOCK_INFURA_PROJECT_ID),
+        ).toBe(false);
+        // Private ranges
+        expect(
+          isPublicEndpointUrl('http://10.0.0.1:8545', MOCK_INFURA_PROJECT_ID),
+        ).toBe(false);
+        expect(
+          isPublicEndpointUrl(
+            'http://192.168.1.1:8545',
+            MOCK_INFURA_PROJECT_ID,
+          ),
+        ).toBe(false);
+        // Public IPs should also return false (public providers use domain names)
+        expect(
+          isPublicEndpointUrl('http://8.8.8.8:8545', MOCK_INFURA_PROJECT_ID),
+        ).toBe(false);
+      });
+
+      it('should return false for any IPv6 address', () => {
+        expect(
+          isPublicEndpointUrl('http://[::1]:8545', MOCK_INFURA_PROJECT_ID),
+        ).toBe(false);
+        expect(
+          isPublicEndpointUrl(
+            'http://[2001:db8::1]:8545',
+            MOCK_INFURA_PROJECT_ID,
+          ),
+        ).toBe(false);
+      });
+    });
+  });
+
+  describe('isSpecialUseDomain', () => {
+    describe('RFC 6761 special-use TLDs', () => {
+      it('should return true for .test TLD', () => {
+        expect(isSpecialUseDomain('myapp.test')).toBe(true);
+        expect(isSpecialUseDomain('rpc.myapp.test')).toBe(true);
+      });
+
+      it('should return true for .localhost TLD', () => {
+        expect(isSpecialUseDomain('myapp.localhost')).toBe(true);
+        expect(isSpecialUseDomain('rpc.myapp.localhost')).toBe(true);
+      });
+
+      it('should return true for .invalid TLD', () => {
+        expect(isSpecialUseDomain('myapp.invalid')).toBe(true);
+        expect(isSpecialUseDomain('rpc.myapp.invalid')).toBe(true);
+      });
+
+      it('should return true for .example TLD', () => {
+        expect(isSpecialUseDomain('myapp.example')).toBe(true);
+        expect(isSpecialUseDomain('rpc.myapp.example')).toBe(true);
+      });
+
+      it('should return true for .local TLD', () => {
+        expect(isSpecialUseDomain('myapp.local')).toBe(true);
+        expect(isSpecialUseDomain('rpc.myapp.local')).toBe(true);
+      });
+    });
+
+    describe('RFC 6761 reserved example domains', () => {
+      it('should return true for example.com', () => {
+        expect(isSpecialUseDomain('example.com')).toBe(true);
+        expect(isSpecialUseDomain('rpc.example.com')).toBe(true);
+        expect(isSpecialUseDomain('api.rpc.example.com')).toBe(true);
+      });
+
+      it('should return true for example.net', () => {
+        expect(isSpecialUseDomain('example.net')).toBe(true);
+        expect(isSpecialUseDomain('rpc.example.net')).toBe(true);
+        expect(isSpecialUseDomain('api.rpc.example.net')).toBe(true);
+      });
+
+      it('should return true for example.org', () => {
+        expect(isSpecialUseDomain('example.org')).toBe(true);
+        expect(isSpecialUseDomain('rpc.example.org')).toBe(true);
+        expect(isSpecialUseDomain('api.rpc.example.org')).toBe(true);
+      });
+    });
+
+    describe('case insensitivity', () => {
+      it('should be case insensitive', () => {
+        expect(isSpecialUseDomain('EXAMPLE.COM')).toBe(true);
+        expect(isSpecialUseDomain('MyApp.TEST')).toBe(true);
+        expect(isSpecialUseDomain('RPC.Example.Org')).toBe(true);
+      });
+    });
+
+    describe('valid public domains', () => {
+      it('should return false for regular domains', () => {
+        expect(isSpecialUseDomain('infura.io')).toBe(false);
+        expect(isSpecialUseDomain('mainnet.infura.io')).toBe(false);
+        expect(isSpecialUseDomain('alchemy.com')).toBe(false);
+        expect(isSpecialUseDomain('rpc.ankr.com')).toBe(false);
+      });
+
+      it('should return false for domains containing but not ending with special TLDs', () => {
+        expect(isSpecialUseDomain('test-rpc.com')).toBe(false);
+        expect(isSpecialUseDomain('example-provider.io')).toBe(false);
+        expect(isSpecialUseDomain('localhost-rpc.net')).toBe(false);
+      });
+    });
+
+    describe('edge cases', () => {
+      it('should return false for empty string', () => {
+        expect(isSpecialUseDomain('')).toBe(false);
+      });
+    });
+  });
+});
