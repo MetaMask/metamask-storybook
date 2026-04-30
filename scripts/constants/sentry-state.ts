@@ -1,0 +1,429 @@
+import {
+  AllProperties,
+  type ObjectMask,
+} from '../../../shared/lib/object.utils';
+
+/**
+ * Sentry “state” here means **masks** passed to `maskObject` (see
+ * `shared/lib/object.utils.ts`), not typed Redux or controller snapshots.
+ *
+ * Mask semantics match `ObjectMask`: `true` copies the value; `false` or `[]` replaces
+ * leaves with `typeof` strings; nested objects recurse; `[AllProperties]` masks dynamic keys.
+ *
+ * `SENTRY_BACKGROUND_STATE` is one mask per background controller (persisted / pre-init
+ * context in `setup-initial-state-hooks`). `SENTRY_UI_STATE` is the Redux root mask for
+ * the UI bundle; `metamask` merges flattened controller masks (not UI-only despite the name).
+ */
+type SentryBackgroundControllerMasks = Record<string, ObjectMask>;
+
+type SentryReduxRootMask = ObjectMask & {
+  metamask: ObjectMask;
+};
+
+export const SENTRY_BACKGROUND_STATE: SentryBackgroundControllerMasks = {
+  AccountTreeController: {
+    accountTree: false,
+  },
+  AccountsController: {
+    internalAccounts: {
+      accounts: false,
+      selectedAccount: false,
+    },
+  },
+  AccountTracker: {
+    accountsByChainId: false,
+  },
+  AddressBookController: {
+    addressBook: false,
+  },
+  AlertController: {
+    alertEnabledness: true,
+    unconnectedAccountAlertShownOrigins: false,
+    web3ShimUsageOrigins: false,
+  },
+  AnnouncementController: {
+    announcements: false,
+  },
+  AuthenticationController: {
+    isSignedIn: false,
+    srpSessionData: false,
+  },
+  NetworkOrderController: {
+    orderedNetworkList: [],
+  },
+  NetworkEnablementController: {
+    enabledNetworkMap: {},
+  },
+  AccountOrderController: {
+    pinnedAccountList: [],
+    hiddenAccountList: [],
+  },
+  AppMetadataController: {
+    currentAppVersion: true,
+    currentMigrationVersion: true,
+    previousAppVersion: true,
+    previousMigrationVersion: true,
+  },
+  ApprovalController: {
+    approvalFlows: false,
+    pendingApprovals: false,
+    pendingApprovalCount: false,
+  },
+  AppStateController: {
+    browserEnvironment: true,
+    connectedStatusPopoverHasBeenShown: true,
+    currentPopupId: false,
+    onboardingDate: false,
+    currentExtensionPopupId: false,
+    defaultHomeActiveTabName: true,
+    fullScreenGasPollTokens: true,
+    // TODO: Fix in https://github.com/MetaMask/metamask-extension/issues/31860
+    // eslint-disable-next-line @typescript-eslint/naming-convention
+    hadAdvancedGasFeesSetPriorToMigration92_3: true,
+    canTrackWalletFundsObtained: true,
+    isRampCardClosed: true,
+    nftsDetectionNoticeDismissed: true,
+    nftsDropdownState: true,
+    notificationGasPollTokens: true,
+    outdatedBrowserWarningLastShown: true,
+    popupGasPollTokens: true,
+    activeQrCodeScanRequest: true,
+    recoveryPhraseReminderHasBeenShown: true,
+    recoveryPhraseReminderLastShown: true,
+    showBetaHeader: true,
+    productTour: true,
+    showPermissionsTour: true,
+    showNetworkBanner: true,
+    showAccountBanner: true,
+    showTestnetMessageInDropdown: true,
+    sidePanelGasPollTokens: true,
+    surveyLinkLastClickedOrClosed: true,
+    snapsInstallPrivacyWarningShown: true,
+    termsOfUseLastAgreed: true,
+    throttledOrigins: false,
+    timeoutMinutes: true,
+    trezorModel: true,
+    pendingExtensionVersion: true,
+    updateModalLastDismissedAt: true,
+    lastUpdatedAt: true,
+    shieldSubscriptionError: true,
+    shieldEndingToastLastClickedOrClosed: true,
+    shieldPausedToastLastClickedOrClosed: true,
+    storageWriteErrorType: true,
+    isWalletResetInProgress: false,
+    pna25Acknowledged: false,
+  },
+  MultichainBalancesController: {
+    balances: false,
+  },
+  MultichainAssetsController: {
+    accountsAssets: false,
+    assetsMetadata: false,
+    allIgnoredAssets: false,
+  },
+  MultichainAssetsRatesController: {
+    assetsRates: false,
+  },
+  BridgeController: {
+    assetExchangeRates: false,
+    minimumBalanceForRentExemptionInLamports: false,
+    quoteRequest: {
+      walletAddress: false,
+      srcTokenAddress: true,
+      slippage: true,
+      srcChainId: true,
+      destChainId: true,
+      destTokenAddress: true,
+      srcTokenAmount: true,
+    },
+    quotes: [],
+    quotesInitialLoadTime: true,
+    quotesLastFetched: true,
+    quotesLoadingStatus: true,
+    quoteFetchError: true,
+    quotesRefreshCount: true,
+  },
+  BridgeStatusController: {
+    txHistory: false,
+  },
+  ConnectivityController: {
+    connectivityStatus: true,
+  },
+  CronjobController: {
+    events: false,
+  },
+  CurrencyController: {
+    currentCurrency: true,
+    currencyRates: true,
+  },
+  DecryptMessageController: {
+    unapprovedDecryptMsgs: false,
+    unapprovedDecryptMsgCount: true,
+  },
+  EncryptionPublicKeyController: {
+    unapprovedEncryptionPublicKeyMsgs: false,
+    unapprovedEncryptionPublicKeyMsgCount: true,
+  },
+  EnsController: {
+    ensResolutionsByAddress: false,
+    ensEntries: false,
+  },
+  GasFeeController: {
+    estimatedGasFeeTimeBounds: true,
+    gasEstimateType: true,
+    gasFeeEstimates: true,
+    gasFeeEstimatesByChainId: true,
+    nonRPCGasFeeApisDisabled: false,
+  },
+  KeyringController: {
+    isUnlocked: true,
+    keyrings: false,
+  },
+  LoggingController: {
+    logs: false,
+  },
+  NotificationServicesController: {
+    subscriptionAccountsSeen: false,
+    isMetamaskNotificationsFeatureSeen: false,
+    isNotificationServicesEnabled: false,
+    isFeatureAnnouncementsEnabled: false,
+    metamaskNotificationsList: false,
+    metamaskNotificationsReadList: false,
+    isCheckingAccountsPresence: false,
+    isFetchingMetamaskNotifications: false,
+    isUpdatingMetamaskNotifications: false,
+    isUpdatingMetamaskNotificationsAccount: false,
+  },
+  MetaMetricsController: {
+    eventsBeforeMetricsOptIn: false,
+    tracesBeforeMetricsOptIn: false,
+    fragments: false,
+    metaMetricsId: true,
+    participateInMetaMetrics: true,
+    segmentApiCalls: false,
+    traits: false,
+    dataCollectionForMarketing: false,
+    marketingCampaignCookieId: true,
+    latestNonAnonymousEventTimestamp: true,
+  },
+  MetaMetricsDataDeletionController: {
+    metaMetricsDataDeletionId: true,
+    metaMetricsDataDeletionTimestamp: true,
+  },
+  NameController: {
+    names: false,
+    nameSources: false,
+    useExternalNameSources: false,
+  },
+  NetworkController: {
+    networkConfigurations: false,
+    networksMetadata: true,
+    selectedNetworkClientId: false,
+  },
+  NftController: {
+    allNftContracts: false,
+    allNfts: false,
+    ignoredNfts: false,
+  },
+  OnboardingController: {
+    completedOnboarding: true,
+    firstTimeFlowType: true,
+    onboardingTabs: false,
+    seedPhraseBackedUp: true,
+  },
+  PPOMController: {
+    securityAlertsEnabled: false,
+    storageMetadata: [],
+    versionInfo: [],
+  },
+  PasskeyController: {
+    passkeyRecord: false,
+  },
+  PermissionController: {
+    subjects: false,
+  },
+  PermissionLogController: {
+    permissionActivityLog: false,
+    permissionHistory: false,
+  },
+  PhishingController: {},
+  PreferencesController: {
+    advancedGasFee: true,
+    currentLocale: true,
+    dismissSeedBackUpReminder: true,
+    overrideContentSecurityPolicyHeader: true,
+    featureFlags: true,
+    forgottenPassword: true,
+    isIpfsGatewayEnabled: false,
+    ipfsGateway: false,
+    knownMethodData: false,
+    ledgerTransportType: true,
+    openSeaEnabled: true,
+    preferences: {
+      autoLockTimeLimit: true,
+      hideZeroBalanceTokens: true,
+      showExtensionInFullSizeView: true,
+      showFiatInTestnets: true,
+      showTestNetworks: true,
+      smartTransactionsOptInStatus: true,
+      tokenNetworkFilter: {},
+      showNativeTokenAsMainBalance: true,
+      showConfirmationAdvancedDetails: true,
+      privacyMode: false,
+      avatarType: true,
+    },
+    useExternalServices: false,
+    snapRegistryList: false,
+    theme: true,
+    signatureSecurityAlertResponses: false,
+    addressSecurityAlertResponses: false,
+    use4ByteResolution: true,
+    useAddressBarEnsResolution: true,
+    useCurrencyRateCheck: true,
+    useMultiAccountBalanceChecker: true,
+    useNftDetection: true,
+    usePhishDetect: true,
+    useTokenDetection: true,
+    useTransactionSimulations: true,
+    enableMV3TimestampSave: true,
+  },
+  RemoteFeatureFlagController: {
+    remoteFeatureFlags: true,
+    cacheTimestamp: false,
+  },
+  RewardsController: {
+    rewardsActiveAccount: false,
+    rewardsAccounts: false,
+    rewardsSubscriptions: false,
+    rewardsSeasons: false,
+    rewardsSeasonStatuses: false,
+    rewardsSubscriptionTokens: false,
+    rewardsPointsEstimateHistory: false,
+  },
+  NotificationServicesPushController: {
+    fcmToken: false,
+  },
+  MultichainRatesController: {
+    fiatCurrency: true,
+    rates: true,
+    cryptocurrencies: true,
+  },
+  SelectedNetworkController: { domains: false },
+  SignatureController: {
+    unapprovedPersonalMsgCount: true,
+    unapprovedPersonalMsgs: false,
+    unapprovedTypedMessages: false,
+    unapprovedTypedMessagesCount: true,
+  },
+  SmartTransactionsController: {
+    smartTransactionsState: {
+      fees: {
+        approvalTxFees: true,
+        tradeTxFees: true,
+      },
+      liveness: true,
+      smartTransactions: false,
+      userOptIn: true,
+      userOptInV2: true,
+    },
+  },
+  SnapController: {
+    snaps: false,
+  },
+  SnapInterfaceController: {
+    interfaces: false,
+  },
+  SnapInsightsController: {
+    insights: false,
+  },
+  SnapRegistryController: {
+    database: false,
+    lastUpdated: false,
+    databaseUnavailable: false,
+  },
+  StaticAssetsController: {},
+  SubjectMetadataController: {
+    subjectMetadata: false,
+  },
+  // TokenDetectionController has no public controller state.
+  TokenDetectionController: {},
+  TokenListController: {
+    tokensChainsCache: {
+      [AllProperties]: false,
+    },
+  },
+  TokenBalancesController: {
+    tokenBalances: false,
+  },
+  TokenRatesController: {
+    marketData: false,
+  },
+  TokensController: {
+    allDetectedTokens: {
+      [AllProperties]: false,
+    },
+    allIgnoredTokens: {
+      [AllProperties]: false,
+    },
+    allTokens: {
+      [AllProperties]: false,
+    },
+  },
+  TransactionController: {
+    transactions: false,
+    lastFetchedBlockNumbers: false,
+    methodData: false,
+  },
+  TransactionPayController: {
+    transactionData: false,
+  },
+  TxController: {
+    transactions: false,
+  },
+  UserOperationController: {
+    userOperations: false,
+  },
+  UserStorageController: {
+    isBackupAndSyncEnabled: true,
+    isBackupAndSyncUpdateLoading: false,
+    isAccountSyncingEnabled: true,
+    isContactSyncingEnabled: true,
+  },
+};
+
+const flattenedBackgroundStateMask: ObjectMask = {};
+
+for (const controllerState of Object.values(SENTRY_BACKGROUND_STATE)) {
+  // Copy only string keys to avoid leaking symbol-only wildcard masks into
+  // flattened UI masks. This isn't allowed by the types, but has happened
+  // before.
+  for (const [key, value] of Object.entries(controllerState)) {
+    flattenedBackgroundStateMask[key] = value;
+  }
+}
+
+export const SENTRY_UI_STATE: SentryReduxRootMask = {
+  gas: true,
+  history: true,
+  appState: {
+    customNonceValue: true,
+    isNetworkMenuOpen: true,
+    nextNonce: true,
+    pendingTokens: false,
+    welcomeScreenSeen: true,
+    slides: false,
+    confirmationExchangeRates: true,
+  },
+  metamask: {
+    ...flattenedBackgroundStateMask,
+    // This property comes from the background but isn't in controller state
+    isInitialized: true,
+    useSafeChainsListValidation: true,
+    watchEthereumAccountEnabled: false,
+    addSnapAccountEnabled: false,
+    snapsAddSnapAccountModalDismissed: false,
+    newPrivacyPolicyToastClickedOrClosed: false,
+    newPrivacyPolicyToastShownDate: false,
+  },
+  unconnectedAccount: true,
+};
