@@ -1,0 +1,931 @@
+import { InternalAccount } from '@metamask/keyring-internal-api';
+import { MiddlewareContext } from '@metamask/json-rpc-engine/v2';
+import {
+  TransactionControllerState,
+  TransactionMeta,
+  TransactionType,
+} from '@metamask/transaction-controller';
+import {
+  MOCK_ANY_NAMESPACE,
+  MockAnyNamespace,
+  Messenger,
+  MessengerActions,
+  MessengerEvents,
+} from '@metamask/messenger';
+import { cloneDeep, omit } from 'lodash';
+import { Hex } from '@metamask/utils';
+import {
+  generateSecurityAlertId,
+  validateRequestWithPPOM,
+} from '../ppom/ppom-util';
+import {
+  BlockaidReason,
+  BlockaidResultType,
+} from '../../../../shared/constants/security-provider';
+import { flushPromises } from '../../../../test/lib/timer-helpers';
+import { createMockInternalAccount } from '../../../../test/jest/mocks';
+import { ORIGIN_METAMASK } from '../../../../shared/constants/app';
+import { CHAIN_IDS } from '../../../../shared/constants/network';
+import { scanAddressAndAddToCache } from '../trust-signals/security-alerts-api';
+import { ResultType } from '../../../../shared/lib/trust-signals';
+import { accountSupports7702 } from '../account-supports-7702';
+import {
+  AddDappTransactionRequest,
+  AddTransactionMessenger,
+  AddTransactionOptions,
+  AddTransactionRequest,
+  addDappTransaction,
+  addTransaction,
+} from './util';
+import { getTempoTransactionBatchArgs } from './tempo-tx-utils';
+
+jest.mock('./tempo-tx-utils', () => ({
+  ...jest.requireActual('./tempo-tx-utils'),
+  getTempoTransactionBatchArgs: jest.fn(),
+}));
+const realGetTempoTransactionBatchArgsImpl =
+  jest.requireActual('./tempo-tx-utils').getTempoTransactionBatchArgs;
+
+jest.mock('../ppom/ppom-util');
+jest.mock('../trust-signals/security-alerts-api');
+
+jest.mock('uuid', () => {
+  const actual = jest.requireActual('uuid');
+
+  return {
+    ...actual,
+    v4: jest.fn(),
+  };
+});
+
+jest.mock('../account-supports-7702', () => ({
+  accountSupports7702: jest.fn().mockResolvedValue(true),
+}));
+
+const SECURITY_ALERT_ID_MOCK = '123';
+const BATCHID_MOCK = '0xmockBatchId' as Hex;
+const FROM_FIELD_MOCK = '0x1';
+const TO_FIELD_MOCK = '0x2';
+const DATA_FIELD_MOCK = '0x3';
+
+const INTERNAL_ACCOUNT_ADDRESS = '0xec1adf982415d2ef5ec55899b9bfb8bc0f29251b';
+const INTERNAL_ACCOUNT = createMockInternalAccount({
+  address: INTERNAL_ACCOUNT_ADDRESS,
+});
+
+const TRANSACTION_PARAMS_MOCK = {
+  from: FROM_FIELD_MOCK,
+  to: TO_FIELD_MOCK,
+  data: DATA_FIELD_MOCK,
+};
+
+const TRANSACTION_OPTIONS_MOCK: AddTransactionOptions = {
+  actionId: 'mockActionId',
+  requestId: 'mockActionId',
+  networkClientId: 'mockNetworkClientId',
+  origin: 'mockOrigin',
+  requireApproval: false,
+  type: TransactionType.simpleSend,
+};
+
+const TEMPO_VALID_CALLS_FIELD_MOCK = [
+  {
+    data: '0xa9059cbb0000000000000000000000002367e6eca6e1fcc2d112133c896e3bddad375aff000000000000000000000000000000000000000000000000002386f26fc10000',
+    to: '0x86fA047df5b69df0CBD6dF566F1468756dCF339D',
+    value: '0x',
+  },
+  {
+    data: '0xa9059cbb0000000000000000000000001e3abc74428056924ceee2f45f060879c3f063ed000000000000000000000000000000000000000000000000002386f26fc10000',
+    to: '0x86fA047df5b69df0CBD6dF566F1468756dCF339D',
+    value: '0x',
+  },
+];
+
+const TEMPO_EXPECTED_TRANSACTIONS_FOR_VALID_CALLS_FIELD = [
+  {
+    params: {
+      data: '0xa9059cbb0000000000000000000000002367e6eca6e1fcc2d112133c896e3bddad375aff000000000000000000000000000000000000000000000000002386f26fc10000',
+      to: '0x86fA047df5b69df0CBD6dF566F1468756dCF339D',
+      value: '0x0',
+    },
+  },
+  {
+    params: {
+      data: '0xa9059cbb0000000000000000000000001e3abc74428056924ceee2f45f060879c3f063ed000000000000000000000000000000000000000000000000002386f26fc10000',
+      to: '0x86fA047df5b69df0CBD6dF566F1468756dCF339D',
+      value: '0x0',
+    },
+  },
+];
+
+const TEMPO_FEE_TOKEN_MOCK = '0xtempoFeeToken';
+
+const TEMPO_VALID_CHAIN_ID = '0x1079' as Hex;
+
+const TEMPO_TRANSACTION_PARAMS_MOCK = {
+  type: '0x76' as const,
+  from: FROM_FIELD_MOCK,
+  feeToken: TEMPO_FEE_TOKEN_MOCK,
+  calls: TEMPO_VALID_CALLS_FIELD_MOCK,
+};
+
+const makeDappRequest = () => ({
+  jsonrpc: '2.0' as const,
+  id: TRANSACTION_OPTIONS_MOCK.actionId as string,
+  method: 'eth_sendTransaction',
+  params: [],
+});
+
+const makeRequestContext = () =>
+  new MiddlewareContext<Record<PropertyKey, unknown>>({
+    origin: TRANSACTION_OPTIONS_MOCK.origin as string,
+    securityAlertResponse: { test: 'value' },
+  });
+
+const TRANSACTION_META_MOCK: TransactionMeta = {
+  id: 'testId',
+  hash: 'testHash',
+} as TransactionMeta;
+
+const BATCH_TRANSACTION_META_MOCK: TransactionMeta = {
+  id: 'batchTestId',
+  hash: 'batchTestHash',
+  batchId: BATCHID_MOCK,
+} as TransactionMeta;
+
+const TRANSACTION_REQUEST_MOCK: AddTransactionRequest = {
+  networkClientId: 'mockNetworkClientId',
+  selectedAccount: {
+    type: 'eip155:eoa',
+  } as InternalAccount,
+  transactionParams: TRANSACTION_PARAMS_MOCK,
+  transactionOptions: TRANSACTION_OPTIONS_MOCK,
+  waitForSubmit: false,
+  internalAccounts: [],
+} as unknown as AddTransactionRequest;
+
+type TestMessenger = Messenger<
+  MockAnyNamespace,
+  MessengerActions<AddTransactionMessenger>,
+  MessengerEvents<AddTransactionMessenger>
+>;
+
+function createMessenger(): TestMessenger {
+  return new Messenger({ namespace: MOCK_ANY_NAMESPACE });
+}
+
+describe('Transaction Utils', () => {
+  let request: AddTransactionRequest;
+  let dappRequest: AddDappTransactionRequest;
+  let tempoDappRequest: AddDappTransactionRequest;
+  let messenger: TestMessenger;
+  let transactions: TransactionMeta[];
+  let addTransactionMock: jest.Mock;
+  let addTransactionBatchMock: jest.Mock;
+  let addUserOperationFromTransactionMock: jest.Mock;
+  let startPollingByNetworkClientIdMock: jest.Mock;
+  let scanAddressActionMock: jest.Mock;
+  const validateRequestWithPPOMMock = jest.mocked(validateRequestWithPPOM);
+  const generateSecurityAlertIdMock = jest.mocked(generateSecurityAlertId);
+  const scanAddressAndAddToCacheMock = jest.mocked(scanAddressAndAddToCache);
+
+  beforeEach(() => {
+    jest.resetAllMocks();
+
+    (accountSupports7702 as jest.Mock).mockResolvedValue(true);
+
+    (getTempoTransactionBatchArgs as jest.Mock).mockImplementation(
+      realGetTempoTransactionBatchArgsImpl,
+    );
+    request = cloneDeep(TRANSACTION_REQUEST_MOCK);
+
+    transactions = [];
+
+    scanAddressAndAddToCacheMock.mockResolvedValue({
+      // eslint-disable-next-line @typescript-eslint/naming-convention
+      result_type: ResultType.Benign,
+      label: 'Safe address',
+    });
+
+    addTransactionMock = jest.fn().mockResolvedValue({
+      result: Promise.resolve('testHash'),
+      transactionMeta: TRANSACTION_META_MOCK,
+    });
+
+    addTransactionBatchMock = jest.fn().mockImplementation(async () => {
+      transactions.push(BATCH_TRANSACTION_META_MOCK);
+      return {
+        batchId: BATCHID_MOCK,
+      };
+    });
+
+    transactions.push(TRANSACTION_META_MOCK);
+
+    addUserOperationFromTransactionMock = jest.fn().mockResolvedValue({
+      id: TRANSACTION_META_MOCK.id,
+      hash: jest.fn().mockResolvedValue({}),
+      transactionHash: jest.fn().mockResolvedValue(TRANSACTION_META_MOCK.hash),
+    });
+    startPollingByNetworkClientIdMock = jest.fn();
+
+    messenger = createMessenger();
+    messenger.registerActionHandler(
+      'TransactionController:addTransaction',
+      addTransactionMock,
+    );
+    messenger.registerActionHandler(
+      'TransactionController:addTransactionBatch',
+      addTransactionBatchMock,
+    );
+    messenger.registerActionHandler(
+      'TransactionController:getState',
+      () => ({ transactions }) as unknown as TransactionControllerState,
+    );
+    messenger.registerActionHandler(
+      'UserOperationController:addUserOperationFromTransaction',
+      addUserOperationFromTransactionMock,
+    );
+    messenger.registerActionHandler(
+      'UserOperationController:startPollingByNetworkClientId',
+      startPollingByNetworkClientIdMock,
+    );
+    scanAddressActionMock = jest.fn();
+    messenger.registerActionHandler(
+      'PhishingController:scanAddress',
+      scanAddressActionMock,
+    );
+
+    generateSecurityAlertIdMock.mockReturnValue(SECURITY_ALERT_ID_MOCK);
+
+    request.messenger = messenger;
+
+    dappRequest = {
+      ...request,
+      dappRequest: makeDappRequest(),
+      requestContext: makeRequestContext(),
+    };
+
+    tempoDappRequest = {
+      ...dappRequest,
+      chainId: TEMPO_VALID_CHAIN_ID,
+      securityAlertsEnabled: true,
+      networkClientId: 'mockNetworkClientId',
+      transactionParams: TEMPO_TRANSACTION_PARAMS_MOCK,
+      dappRequest: {
+        ...dappRequest.dappRequest,
+        params: [TEMPO_TRANSACTION_PARAMS_MOCK],
+      },
+    };
+  });
+
+  describe('addTransaction', () => {
+    describe('if selected account is EOA', () => {
+      it('adds transaction', async () => {
+        await addTransaction(request);
+
+        expect(addTransactionMock).toHaveBeenCalledTimes(1);
+        expect(addTransactionMock).toHaveBeenCalledWith(
+          TRANSACTION_PARAMS_MOCK,
+          {
+            ...TRANSACTION_OPTIONS_MOCK,
+          },
+        );
+      });
+
+      it('returns transaction meta', async () => {
+        const transactionMeta = await addTransaction(request);
+        expect(transactionMeta).toStrictEqual(TRANSACTION_META_MOCK);
+      });
+
+      it('does not throw if result promise fails if waitForSubmit is false', async () => {
+        addTransactionMock.mockResolvedValue({
+          result: Promise.reject(new Error('Test Error')),
+          transactionMeta: TRANSACTION_META_MOCK,
+        });
+
+        await expect(addTransaction(request)).resolves.toBeTruthy();
+      });
+
+      it('throws if result promise fails if waitForSubmit is true', async () => {
+        request.waitForSubmit = true;
+
+        addTransactionMock.mockResolvedValue({
+          result: Promise.reject(new Error('Test Error')),
+          transactionMeta: TRANSACTION_META_MOCK,
+        });
+
+        await expect(addTransaction(request)).rejects.toThrow('Test Error');
+      });
+
+      it('does not wait for result if waitForSubmit is false', async () => {
+        addTransactionMock.mockResolvedValue({
+          result: new Promise(() => {
+            /* Intentionally not resolved */
+          }),
+          transactionMeta: TRANSACTION_META_MOCK,
+        });
+
+        await expect(addTransaction(request)).resolves.toBeTruthy();
+      });
+
+      it('waits for result if waitForSubmit is true', async () => {
+        request.waitForSubmit = true;
+
+        let resultResolve;
+        let completed = false;
+
+        const resultPromise = new Promise<string>((resolve) => {
+          resultResolve = resolve;
+        });
+
+        addTransactionMock.mockResolvedValue({
+          result: resultPromise,
+          transactionMeta: TRANSACTION_META_MOCK,
+        });
+
+        addTransaction(request).then(() => {
+          completed = true;
+        });
+
+        await flushPromises();
+
+        expect(completed).toBe(false);
+
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+        resultResolve!(TRANSACTION_META_MOCK.hash);
+
+        await flushPromises();
+
+        expect(completed).toBe(true);
+      });
+    });
+
+    describe('if selected account is smart contract', () => {
+      beforeEach(() => {
+        request.selectedAccount.type = 'eip155:erc4337';
+      });
+
+      it('adds user operation', async () => {
+        await addTransaction(request);
+
+        expect(addUserOperationFromTransactionMock).toHaveBeenCalledTimes(1);
+        expect(addUserOperationFromTransactionMock).toHaveBeenCalledWith(
+          TRANSACTION_PARAMS_MOCK,
+          {
+            networkClientId: TRANSACTION_REQUEST_MOCK.networkClientId,
+            origin: TRANSACTION_OPTIONS_MOCK.origin,
+            requireApproval: TRANSACTION_OPTIONS_MOCK.requireApproval,
+            swaps: undefined,
+            type: TRANSACTION_OPTIONS_MOCK.type,
+          },
+        );
+      });
+
+      it('starts polling', async () => {
+        await addTransaction(request);
+
+        expect(startPollingByNetworkClientIdMock).toHaveBeenCalledTimes(1);
+        expect(startPollingByNetworkClientIdMock).toHaveBeenCalledWith(
+          TRANSACTION_REQUEST_MOCK.networkClientId,
+        );
+      });
+
+      it('returns transaction meta', async () => {
+        const transactionMeta = await addTransaction(request);
+        expect(transactionMeta).toStrictEqual(TRANSACTION_META_MOCK);
+      });
+
+      it('does not wait for transaction hash promise if waitForSubmit is false', async () => {
+        addUserOperationFromTransactionMock.mockResolvedValue({
+          id: TRANSACTION_META_MOCK.id,
+          hash: undefined as never,
+          transactionHash: () =>
+            new Promise(() => {
+              /* Intentionally not resolved */
+            }),
+        });
+
+        await expect(addTransaction(request)).resolves.toBeTruthy();
+      });
+
+      it('waits for transaction hash promise if waitForSubmit is true', async () => {
+        request.waitForSubmit = true;
+
+        let transactionHashResolve;
+        let completed = false;
+
+        const transactionHashPromise = new Promise<string>((resolve) => {
+          transactionHashResolve = resolve;
+        });
+
+        addUserOperationFromTransactionMock.mockResolvedValue({
+          id: TRANSACTION_META_MOCK.id,
+          hash: () => Promise.resolve(TRANSACTION_META_MOCK.hash),
+          transactionHash: () => transactionHashPromise,
+        });
+
+        addTransaction(request).then(() => {
+          completed = true;
+        });
+
+        await flushPromises();
+
+        expect(completed).toBe(false);
+
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+        transactionHashResolve!(TRANSACTION_META_MOCK.hash);
+
+        await flushPromises();
+
+        expect(completed).toBe(true);
+      });
+
+      it('does not throw if transaction hash promise fails and waitForSubmit is false', async () => {
+        addUserOperationFromTransactionMock.mockResolvedValue({
+          id: TRANSACTION_META_MOCK.id,
+          hash: jest.fn().mockRejectedValue(new Error('Test Error')),
+          transactionHash: jest.fn().mockResolvedValue({}),
+        });
+
+        await expect(addTransaction(request)).resolves.toBeTruthy();
+      });
+
+      it('throws if transaction hash promise fails and waitForSubmit is true', async () => {
+        request.waitForSubmit = true;
+
+        addUserOperationFromTransactionMock.mockResolvedValue({
+          id: TRANSACTION_META_MOCK.id,
+          hash: undefined as never,
+          transactionHash: jest.fn().mockRejectedValue(new Error('Test Error')),
+        });
+
+        await expect(addTransaction(request)).rejects.toThrow('Test Error');
+      });
+
+      it('removes type from swaps metadata', async () => {
+        request.transactionOptions.swaps = {
+          meta: {
+            sourceTokenSymbol: 'ETH',
+            type: TransactionType.simpleSend,
+          },
+        };
+
+        await addTransaction(request);
+
+        expect(addUserOperationFromTransactionMock).toHaveBeenCalledTimes(1);
+        expect(addUserOperationFromTransactionMock).toHaveBeenCalledWith(
+          TRANSACTION_PARAMS_MOCK,
+          expect.objectContaining({
+            swaps: {
+              sourceTokenSymbol: 'ETH',
+            },
+          }),
+        );
+      });
+
+      it('normalises gas fees', async () => {
+        request.transactionParams.maxFeePerGas = 'a';
+        request.transactionParams.maxPriorityFeePerGas = 'b';
+
+        await addTransaction(request);
+
+        expect(addUserOperationFromTransactionMock).toHaveBeenCalledTimes(1);
+        expect(addUserOperationFromTransactionMock).toHaveBeenCalledWith(
+          {
+            ...TRANSACTION_PARAMS_MOCK,
+            maxFeePerGas: '0xa',
+            maxPriorityFeePerGas: '0xb',
+          },
+          expect.anything(),
+        );
+      });
+    });
+
+    describe('validates using security provider', () => {
+      it('adds loading response to request options', async () => {
+        await addTransaction({
+          ...request,
+          securityAlertsEnabled: true,
+          chainId: '0x1',
+        });
+
+        expect(addTransactionMock).toHaveBeenCalledTimes(1);
+
+        expect(addTransactionMock).toHaveBeenCalledWith(
+          TRANSACTION_PARAMS_MOCK,
+          {
+            ...TRANSACTION_OPTIONS_MOCK,
+            securityAlertResponse: {
+              reason: BlockaidReason.inProgress,
+              // TODO: Fix in https://github.com/MetaMask/metamask-extension/issues/31860
+              // eslint-disable-next-line @typescript-eslint/naming-convention
+              result_type: BlockaidResultType.Loading,
+              securityAlertId: SECURITY_ALERT_ID_MOCK,
+            },
+          },
+        );
+      });
+
+      it('unless blockaid is disabled', async () => {
+        await addTransaction({
+          ...request,
+          securityAlertsEnabled: false,
+          chainId: '0x1',
+        });
+
+        expect(addTransactionMock).toHaveBeenCalledTimes(1);
+
+        expect(addTransactionMock).toHaveBeenCalledWith(
+          TRANSACTION_PARAMS_MOCK,
+          TRANSACTION_OPTIONS_MOCK,
+        );
+
+        expect(validateRequestWithPPOMMock).toHaveBeenCalledTimes(0);
+      });
+
+      it('send to users own account', async () => {
+        const sendRequest = {
+          ...request,
+          transactionParams: {
+            ...request.transactionParams,
+            to: INTERNAL_ACCOUNT_ADDRESS,
+          },
+        };
+        await addTransaction({
+          ...sendRequest,
+          securityAlertsEnabled: false,
+          chainId: '0x1',
+          internalAccounts: [INTERNAL_ACCOUNT],
+        });
+
+        expect(addTransactionMock).toHaveBeenCalledTimes(1);
+
+        expect(addTransactionMock).toHaveBeenCalledWith(
+          sendRequest.transactionParams,
+          TRANSACTION_OPTIONS_MOCK,
+        );
+
+        expect(validateRequestWithPPOMMock).toHaveBeenCalledTimes(0);
+      });
+
+      it('unless transaction type is swap', async () => {
+        const swapRequest = { ...request };
+        swapRequest.transactionOptions.type = TransactionType.swap;
+
+        await addTransaction({
+          ...swapRequest,
+          securityAlertsEnabled: true,
+          chainId: '0x1',
+        });
+
+        expect(addTransactionMock).toHaveBeenCalledTimes(1);
+
+        expect(addTransactionMock).toHaveBeenCalledWith(
+          TRANSACTION_PARAMS_MOCK,
+          {
+            ...TRANSACTION_OPTIONS_MOCK,
+            type: TransactionType.swap,
+          },
+        );
+
+        expect(validateRequestWithPPOMMock).toHaveBeenCalledTimes(0);
+      });
+
+      it('unless transaction type is swapApproval', async () => {
+        const swapRequest = { ...request };
+        swapRequest.transactionOptions.type = TransactionType.swapApproval;
+
+        await addTransaction({
+          ...swapRequest,
+          securityAlertsEnabled: true,
+          chainId: '0x1',
+        });
+
+        expect(addTransactionMock).toHaveBeenCalledTimes(1);
+
+        expect(addTransactionMock).toHaveBeenCalledWith(
+          TRANSACTION_PARAMS_MOCK,
+          {
+            ...TRANSACTION_OPTIONS_MOCK,
+            type: TransactionType.swapApproval,
+          },
+        );
+
+        expect(validateRequestWithPPOMMock).toHaveBeenCalledTimes(0);
+      });
+
+      it('does not call PPOM if is a transfer to self and value is zero', async () => {
+        const INTERNAL_ACCOUNT_ADDRESS_2 =
+          '0x68d3ad12ea94779cb37262be1c179dbd8e208afe';
+        const sendRequest = {
+          ...request,
+          internalAccounts: [
+            createMockInternalAccount({
+              address: INTERNAL_ACCOUNT_ADDRESS_2,
+            }),
+          ],
+          transactionParams: {
+            ...request.transactionParams,
+            data: '0xa9059cbb00000000000000000000000068d3ad12ea94779cb37262be1c179dbd8e208afe00000000000000000000000000000000000000000000000000000000000f4240',
+            value: '0x0',
+          },
+        };
+
+        await addTransaction({
+          ...sendRequest,
+          transactionOptions: {
+            ...TRANSACTION_OPTIONS_MOCK,
+            type: TransactionType.tokenMethodTransfer,
+          },
+          securityAlertsEnabled: true,
+          chainId: '0x1',
+        });
+
+        expect(addTransactionMock).toHaveBeenCalledTimes(1);
+
+        expect(validateRequestWithPPOMMock).toHaveBeenCalledTimes(0);
+      });
+    });
+
+    describe('adds trust signals', () => {
+      beforeEach(() => {
+        request.transactionOptions.origin = ORIGIN_METAMASK;
+        request.transactionParams.to =
+          '0x1234567890123456789012345678901234567890';
+      });
+
+      it('calls scanAddressAndAddToCache', async () => {
+        await addTransaction({
+          ...request,
+          securityAlertsEnabled: true,
+          chainId: CHAIN_IDS.MAINNET,
+        });
+
+        expect(scanAddressAndAddToCacheMock).toHaveBeenCalledTimes(1);
+        expect(scanAddressAndAddToCacheMock).toHaveBeenCalledWith(
+          '0x1234567890123456789012345678901234567890',
+          expect.any(Function),
+          expect.any(Function),
+          CHAIN_IDS.MAINNET,
+          expect.objectContaining({ scanAddress: expect.any(Function) }),
+        );
+      });
+
+      it('provides a scanAddress adapter that forwards to PhishingController:scanAddress', async () => {
+        await addTransaction({
+          ...request,
+          securityAlertsEnabled: true,
+          chainId: CHAIN_IDS.MAINNET,
+        });
+
+        const scanAdapter = scanAddressAndAddToCacheMock.mock.calls[0][4];
+        await scanAdapter.scanAddress(
+          CHAIN_IDS.MAINNET,
+          '0x1234567890123456789012345678901234567890',
+        );
+
+        expect(scanAddressActionMock).toHaveBeenCalledTimes(1);
+        expect(scanAddressActionMock).toHaveBeenCalledWith(
+          CHAIN_IDS.MAINNET,
+          '0x1234567890123456789012345678901234567890',
+        );
+      });
+
+      it('does not call scanAddressAndAddToCache when security alerts are disabled', async () => {
+        await addTransaction({
+          ...request,
+          securityAlertsEnabled: false,
+          chainId: CHAIN_IDS.MAINNET,
+        });
+
+        expect(scanAddressAndAddToCacheMock).not.toHaveBeenCalled();
+      });
+
+      it('does not call scanAddressAndAddToCache when origin is not ORIGIN_METAMASK', async () => {
+        request.transactionOptions.origin = 'https://example.com';
+
+        await addTransaction({
+          ...request,
+          securityAlertsEnabled: true,
+          chainId: CHAIN_IDS.MAINNET,
+        });
+
+        expect(scanAddressAndAddToCacheMock).not.toHaveBeenCalled();
+      });
+
+      it('does not call scanAddressAndAddToCache when to address is not a string', async () => {
+        request.transactionParams.to = undefined;
+
+        await addTransaction({
+          ...request,
+          securityAlertsEnabled: true,
+          chainId: CHAIN_IDS.MAINNET,
+        });
+
+        expect(scanAddressAndAddToCacheMock).not.toHaveBeenCalled();
+      });
+
+      it('calls scanAddressAndAddToCache even for a chain the extension does not recognize', async () => {
+        // The PhishingController now decides chain support internally, so
+        // callers no longer pre-gate on a recognized chain ID.
+        const transactionMeta = await addTransaction({
+          ...request,
+          securityAlertsEnabled: true,
+          chainId: '0xfake-chain-id',
+        });
+
+        expect(scanAddressAndAddToCacheMock).toHaveBeenCalledTimes(1);
+        expect(scanAddressAndAddToCacheMock).toHaveBeenCalledWith(
+          '0x1234567890123456789012345678901234567890',
+          expect.any(Function),
+          expect.any(Function),
+          '0xfake-chain-id',
+          expect.objectContaining({ scanAddress: expect.any(Function) }),
+        );
+        expect(transactionMeta).toStrictEqual(TRANSACTION_META_MOCK);
+      });
+    });
+  });
+
+  describe('addDappTransaction', () => {
+    describe('if selected account is EOA', () => {
+      it('adds transaction', async () => {
+        await addDappTransaction(dappRequest);
+
+        expect(addTransactionMock).toHaveBeenCalledTimes(1);
+        expect(addTransactionMock).toHaveBeenCalledWith(
+          TRANSACTION_PARAMS_MOCK,
+          {
+            ...TRANSACTION_OPTIONS_MOCK,
+            method: makeDappRequest().method,
+            requireApproval: true,
+            securityAlertResponse: makeRequestContext().assertGet(
+              'securityAlertResponse',
+            ),
+            type: undefined,
+          },
+        );
+      });
+
+      it('returns transaction hash', async () => {
+        const transactionHash = await addDappTransaction(dappRequest);
+        expect(transactionHash).toStrictEqual(TRANSACTION_META_MOCK.hash);
+      });
+
+      it('throws if result promise fails', async () => {
+        addTransactionMock.mockResolvedValue({
+          result: Promise.reject(new Error('Test Error')),
+          transactionMeta: TRANSACTION_META_MOCK,
+        });
+
+        await expect(addDappTransaction(dappRequest)).rejects.toThrow(
+          'Test Error',
+        );
+      });
+    });
+
+    describe('if selected account is smart contract', () => {
+      beforeEach(() => {
+        request.selectedAccount.type = 'eip155:erc4337';
+      });
+
+      it('adds user operation', async () => {
+        await addDappTransaction(dappRequest);
+
+        expect(addUserOperationFromTransactionMock).toHaveBeenCalledTimes(1);
+        expect(addUserOperationFromTransactionMock).toHaveBeenCalledWith(
+          TRANSACTION_PARAMS_MOCK,
+          {
+            networkClientId: TRANSACTION_REQUEST_MOCK.networkClientId,
+            origin: TRANSACTION_OPTIONS_MOCK.origin,
+            requireApproval: true,
+            swaps: undefined,
+            type: undefined,
+          },
+        );
+      });
+
+      it('starts polling', async () => {
+        await addDappTransaction(dappRequest);
+
+        expect(startPollingByNetworkClientIdMock).toHaveBeenCalledTimes(1);
+        expect(startPollingByNetworkClientIdMock).toHaveBeenCalledWith(
+          TRANSACTION_REQUEST_MOCK.networkClientId,
+        );
+      });
+
+      it('returns transaction hash', async () => {
+        const transactionHash = await addDappTransaction(dappRequest);
+        expect(transactionHash).toStrictEqual(TRANSACTION_META_MOCK.hash);
+      });
+
+      it('throws if transaction hash promise fails', async () => {
+        addUserOperationFromTransactionMock.mockResolvedValue({
+          id: TRANSACTION_META_MOCK.id,
+          hash: jest.fn().mockResolvedValue({}),
+          transactionHash: jest.fn().mockRejectedValue(new Error('Test Error')),
+        });
+
+        await expect(addDappTransaction(dappRequest)).rejects.toThrow(
+          'Test Error',
+        );
+      });
+    });
+
+    describe('if transaction is on a Tempo chain', () => {
+      it('adds transaction with extra Tempo-specific params', async () => {
+        await addDappTransaction({
+          ...dappRequest,
+          chainId: '0x1079',
+        });
+
+        expect(addTransactionMock).toHaveBeenCalledTimes(1);
+        expect(addTransactionMock).toHaveBeenCalledWith(
+          TRANSACTION_PARAMS_MOCK,
+          {
+            ...TRANSACTION_OPTIONS_MOCK,
+            method: makeDappRequest().method,
+            requireApproval: true,
+            securityAlertResponse: makeRequestContext().assertGet(
+              'securityAlertResponse',
+            ),
+            type: undefined,
+            gasFeeToken: '0x20c0000000000000000000000000000000000000',
+            excludeNativeTokenForFee: true,
+          },
+        );
+      });
+
+      it('sends a classic tx if `to` is missing (contract deployment)', async () => {
+        const transactionParamsMockWithoutTo = omit(
+          TRANSACTION_PARAMS_MOCK,
+          'to',
+        );
+        await addDappTransaction({
+          ...dappRequest,
+          transactionParams: transactionParamsMockWithoutTo,
+          chainId: '0x1079',
+        });
+
+        expect(addTransactionMock).toHaveBeenCalledTimes(1);
+        expect(addTransactionMock).toHaveBeenCalledWith(
+          transactionParamsMockWithoutTo,
+          {
+            ...TRANSACTION_OPTIONS_MOCK,
+            method: makeDappRequest().method,
+            requireApproval: true,
+            securityAlertResponse: makeRequestContext().assertGet(
+              'securityAlertResponse',
+            ),
+            type: undefined,
+          },
+        );
+      });
+    });
+
+    describe('if transaction is Tempo Transaction (0x76)', () => {
+      it('calls addTransactionBatch with converted Tempo-specific params', async () => {
+        const result = await addDappTransaction(tempoDappRequest);
+
+        expect(addTransactionBatchMock).toHaveBeenCalledTimes(1);
+        expect(addTransactionBatchMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            actionId: TRANSACTION_OPTIONS_MOCK.actionId,
+            networkClientId: TRANSACTION_OPTIONS_MOCK.networkClientId,
+            origin: TRANSACTION_OPTIONS_MOCK.origin,
+            requestId: TRANSACTION_OPTIONS_MOCK.requestId,
+            requireApproval: true,
+            traceContext: undefined,
+            from: FROM_FIELD_MOCK,
+            gasFeeToken: TEMPO_FEE_TOKEN_MOCK,
+            excludeNativeTokenForFee: true,
+            securityAlertResponse: { test: 'value' },
+            transactions: TEMPO_EXPECTED_TRANSACTIONS_FOR_VALID_CALLS_FIELD,
+          }),
+        );
+        expect(result).toEqual(BATCH_TRANSACTION_META_MOCK.hash);
+      });
+
+      it('does not call addTransactionBatch if getTempoTransactionBatchArgs throws', async () => {
+        (getTempoTransactionBatchArgs as jest.Mock).mockImplementationOnce(
+          () => {
+            throw new Error('Tempo Transaction: Mock error');
+          },
+        );
+
+        await expect(addDappTransaction(tempoDappRequest)).rejects.toThrow(
+          `Tempo Transaction: Mock error`,
+        );
+        expect(addTransactionBatchMock).not.toHaveBeenCalled();
+      });
+
+      it('does not call addTransactionBatch if accountSupports7702 resolves to false', async () => {
+        (accountSupports7702 as jest.Mock).mockResolvedValueOnce(false);
+        await expect(addDappTransaction(tempoDappRequest)).rejects.toThrow(
+          `Wallet not supported for Tempo Transactions.`,
+        );
+        expect(addTransactionBatchMock).not.toHaveBeenCalled();
+      });
+    });
+  });
+});
