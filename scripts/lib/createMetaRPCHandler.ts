@@ -1,0 +1,124 @@
+import { rpcErrors, serializeError } from '@metamask/rpc-errors';
+import type {
+  Json,
+  JsonRpcRequest,
+  PendingJsonRpcResponse,
+} from '@metamask/utils';
+import type { TaggedApiMethod } from '../messenger-client-init/utils';
+import {
+  continueTraceContext,
+  extractTraceMetadata,
+  sentryGetActiveSpan,
+  trace,
+} from '../../../shared/lib/trace';
+import {
+  admitTraceWrappers,
+  isRootWrapperEnabled,
+} from '../../../shared/lib/wrapper-sampling';
+import { isStreamWritable, type StreamLike } from './stream-utils';
+
+type MetaRpcApi = Record<string, TaggedApiMethod>;
+
+type RpcStream = StreamLike & {
+  write: (data: PendingJsonRpcResponse) => void;
+};
+
+const createMetaRPCHandler = (api: MetaRpcApi, outStream: RpcStream) => {
+  return async (data: JsonRpcRequest) => {
+    if (!isStreamWritable(outStream)) {
+      return;
+    }
+
+    const handler = api[data.method];
+
+    if (!handler) {
+      outStream.write({
+        jsonrpc: '2.0',
+        error: rpcErrors.methodNotFound({
+          message: `${data.method} not found`,
+        }),
+        id: data.id,
+      });
+      return;
+    }
+
+    const controller = handler._controllerName;
+    const { cleanParams, traceMetadata } = extractTraceMetadata(data.params);
+    const traceContext = traceMetadata?.traceContext;
+    const name: `Background RPC: ${string}` = controller
+      ? `Background RPC: ${controller}.${data.method}`
+      : (traceMetadata?.spanName ?? `Background RPC: ${data.method}`);
+    const spanData = {
+      method: data.method,
+      ...(controller && { controller }),
+      ...(traceMetadata?.messengerAction && {
+        action: traceMetadata.messengerAction,
+      }),
+    };
+    const callHandler = () =>
+      Array.isArray(cleanParams)
+        ? handler.call(api, ...cleanParams)
+        : handler.call(api, cleanParams);
+
+    let result: unknown;
+    let error: unknown;
+    try {
+      if (!traceContext) {
+        // No UI trace context: the dispatch roots its own trace, so
+        // concurrent handlers get independent trace ids.
+        result = isRootWrapperEnabled()
+          ? await trace(
+              { name, op: 'rpc.handler', root: true, data: spanData },
+              () =>
+                admitTraceWrappers(
+                  sentryGetActiveSpan()?.spanContext().traceId,
+                  callHandler,
+                ),
+            )
+          : await callHandler();
+      } else if (traceContext.parentSampled) {
+        // A sampled UI span always gets its `rpc.handler` child: without an
+        // active span, fetch starts no `http.client` span and its trace
+        // headers name a span that is never sent.
+        result = await trace(
+          {
+            name,
+            parentContext: traceContext,
+            op: 'rpc.handler',
+            data: spanData,
+          },
+          callHandler,
+        );
+      } else {
+        // An unsampled UI span: nothing under it is recorded, so continue its
+        // context, which carries the unsampled decision, without a span.
+        result = await continueTraceContext(traceContext, callHandler);
+      }
+    } catch (err) {
+      error = err;
+    }
+
+    if (!isStreamWritable(outStream)) {
+      if (error) {
+        console.error(error);
+      }
+      return;
+    }
+
+    if (error) {
+      outStream.write({
+        jsonrpc: '2.0',
+        error: serializeError(error, { shouldIncludeStack: true }),
+        id: data.id,
+      });
+    } else {
+      outStream.write({
+        jsonrpc: '2.0',
+        result: result as Json,
+        id: data.id,
+      });
+    }
+  };
+};
+
+export default createMetaRPCHandler;
